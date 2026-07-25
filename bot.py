@@ -1,12 +1,13 @@
+    main()
 import os
 import logging
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import google.generativeai as genai
+import requests
 
-# 1. خادم إبقاء الخدمة تعمل
+# 1. خادم إبقاء الخدمة تعمل على Render
 app = Flask('')
 
 @app.route('/')
@@ -22,12 +23,14 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# 2. جلب المفاتيح
+# 2. إعداد السجلات
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أهلاً بك يا سندباد المدى! بوت أورورا جاهز ومفعل بالكامل الآن.")
@@ -36,29 +39,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
     if not GEMINI_KEY:
-        await update.message.reply_text("خطأ: مفتاح GEMINI_API_KEY غير مضاف في Render.")
+        await update.message.reply_text("خطأ: مفتاح GEMINI_API_KEY غير مضاف في إعدادات Render.")
         return
 
+    # الاتصال المباشر بـ Gemini REST API لضمان استقرار الخدمة
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{
+            "parts": [{"text": user_text}]
+        }]
+    }
+
     try:
-        # استخدام الاسم المحدث بدقة لتفادي خطأ 404
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        response = model.generate_content(user_text)
-        
-        if response and response.text:
-            await update.message.reply_text(response.text)
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        res_data = response.json()
+
+        if response.status_code == 200:
+            try:
+                reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
+                await update.message.reply_text(reply_text)
+            except (KeyError, IndexError):
+                await update.message.reply_text("تم استلام الاستجابة ولكن تعذر استخراج النص منها.")
         else:
-            await update.message.reply_text("عذراً، لم أتمكن من استخراج إجابة.")
-            
+            error_msg = res_data.get('error', {}).get('message', 'خطأ غير معروف')
+            await update.message.reply_text(f"خطأ من جوجل (كود {response.status_code}):\n{error_msg}")
+
     except Exception as e:
-        # إذا حدثت مشكلة بالاسم المحدث، نجرب النموذج القياسي المباشر
-        try:
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content(user_text)
-            if response and response.text:
-                await update.message.reply_text(response.text)
-                return
-        except Exception as err:
-            await update.message.reply_text(f"خطأ في Gemini: {str(err)}")
+        await update.message.reply_text(f"حدث خطأ في الاتصال الشبكي:\n{str(e)}")
 
 def main():
     keep_alive()
