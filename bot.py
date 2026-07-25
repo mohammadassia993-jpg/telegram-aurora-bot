@@ -7,7 +7,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import google.generativeai as genai
 import requests
 
-# 1. خادم إبقاء الخدمة تعمل
 app = Flask('')
 
 @app.route('/')
@@ -23,13 +22,6 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# 2. إعداد السجلات
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-# 3. جلب المفاتيح
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
@@ -42,8 +34,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    
-    # محاولة استخدام Gemini
+    errors = []
+
+    # 1. تجربة Gemini
     if GEMINI_KEY:
         try:
             model = genai.GenerativeModel('gemini-1.5-flash')
@@ -52,9 +45,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(response.text)
                 return
         except Exception as e:
-            logging.error(f"Gemini Error: {e}")
+            errors.append(f"خطأ Gemini: {str(e)}")
+    else:
+        errors.append("مفتاح GEMINI_API_KEY غير مضاف.")
 
-    # محاولة استخدام DeepSeek
+    # 2. تجربة DeepSeek
     if DEEPSEEK_KEY:
         try:
             headers = {
@@ -70,10 +65,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply = res.json()['choices'][0]['message']['content']
                 await update.message.reply_text(reply)
                 return
+            else:
+                errors.append(f"خطأ DeepSeek (كود {res.status_code}): {res.text}")
         except Exception as e:
-            logging.error(f"DeepSeek Error: {e}")
+            errors.append(f"خطأ DeepSeek: {str(e)}")
+    else:
+        errors.append("مفتاح DEEPSEEK_API_KEY غير مضاف.")
 
-    await update.message.reply_text("عذراً، لم أتمكن من الحصول على إجابة من مفاتيح الذكاء الاصطناعي. يرجى التأكد من إضافة GEMINI_API_KEY في إعدادات Render.")
+    # إظهار التشخيص الدقيق
+    error_msg = "\n".join(errors)
+    await update.message.reply_text(f"لم نتمكن من الرد. التفاصيل الفنية:\n\n{error_msg}")
 
 def main():
     keep_alive()
