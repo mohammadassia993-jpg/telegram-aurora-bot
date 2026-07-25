@@ -1,79 +1,143 @@
-    main()
 import os
-import logging
-from threading import Thread
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
+from flask import Flask
+from threading import Thread
 
-# 1. خادم إبقاء الخدمة تعمل على Render
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Aurora Bot is Alive!"
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_web_server)
-    t.daemon = True
-    t.start()
-
-# 2. إعداد السجلات
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+# ===========================
+# Environment Variables
+# ===========================
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك يا سندباد المدى! بوت أورورا جاهز ومفعل بالكامل الآن.")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    
-    if not GEMINI_KEY:
-        await update.message.reply_text("خطأ: مفتاح GEMINI_API_KEY غير مضاف في إعدادات Render.")
-        return
+# ===========================
+# Flask Server (Render)
+# ===========================
 
-    # الاتصال المباشر بـ Gemini REST API لضمان استقرار الخدمة
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": [{
-            "parts": [{"text": user_text}]
-        }]
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Bot is running."
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+def keep_alive():
+    Thread(target=run_web).start()
+
+
+# ===========================
+# Gemini API
+# ===========================
+
+# تم التعديل إلى النموذج المعتمد والمستقر رسمياً
+MODEL = "gemini-1.5-flash"
+
+
+def ask_gemini(prompt: str) -> str:
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-        res_data = response.json()
+        response = requests.post(
+            url,
+            headers=headers,
+            json=data,
+            timeout=60,
+        )
 
-        if response.status_code == 200:
-            try:
-                reply_text = res_data['candidates'][0]['content']['parts'][0]['text']
-                await update.message.reply_text(reply_text)
-            except (KeyError, IndexError):
-                await update.message.reply_text("تم استلام الاستجابة ولكن تعذر استخراج النص منها.")
-        else:
-            error_msg = res_data.get('error', {}).get('message', 'خطأ غير معروف')
-            await update.message.reply_text(f"خطأ من جوجل (كود {response.status_code}):\n{error_msg}")
+        response.raise_for_status()
+
+        result = response.json()
+
+        return result["candidates"][0]["content"]["parts"][0]["text"]
 
     except Exception as e:
-        await update.message.reply_text(f"حدث خطأ في الاتصال الشبكي:\n{str(e)}")
+        return f"Gemini Error:\n{e}"
+
+
+# ===========================
+# Telegram Handlers
+# ===========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "أهلاً بك يا سندباد المدى! أرسل أي رسالة وسأجيبك فوراً بالذكاء الاصطناعي."
+    )
+
+
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+
+    await update.message.chat.send_action("typing")
+
+    answer = ask_gemini(user_text)
+
+    if len(answer) > 4000:
+        for i in range(0, len(answer), 4000):
+            await update.message.reply_text(answer[i:i + 4000])
+    else:
+        await update.message.reply_text(answer)
+
+
+# ===========================
+# Main
+# ===========================
 
 def main():
     keep_alive()
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(CommandHandler("start", start))
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            chat,
+        )
+    )
+
+    print("Bot Started...")
+
     application.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
