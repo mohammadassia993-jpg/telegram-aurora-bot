@@ -5,8 +5,8 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
-import requests
 
+# 1. خادم إبقاء الخدمة تعمل
 app = Flask('')
 
 @app.route('/')
@@ -22,9 +22,9 @@ def keep_alive():
     t.daemon = True
     t.start()
 
+# 2. جلب المفاتيح
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
@@ -34,47 +34,31 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    errors = []
+    
+    if not GEMINI_KEY:
+        await update.message.reply_text("خطأ: مفتاح GEMINI_API_KEY غير مضاف في Render.")
+        return
 
-    # 1. تجربة Gemini
-    if GEMINI_KEY:
+    try:
+        # استخدام الاسم المحدث بدقة لتفادي خطأ 404
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(user_text)
+        
+        if response and response.text:
+            await update.message.reply_text(response.text)
+        else:
+            await update.message.reply_text("عذراً، لم أتمكن من استخراج إجابة.")
+            
+    except Exception as e:
+        # إذا حدثت مشكلة بالاسم المحدث، نجرب النموذج القياسي المباشر
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-pro')
             response = model.generate_content(user_text)
             if response and response.text:
                 await update.message.reply_text(response.text)
                 return
-        except Exception as e:
-            errors.append(f"خطأ Gemini: {str(e)}")
-    else:
-        errors.append("مفتاح GEMINI_API_KEY غير مضاف.")
-
-    # 2. تجربة DeepSeek
-    if DEEPSEEK_KEY:
-        try:
-            headers = {
-                "Authorization": f"Bearer {DEEPSEEK_KEY}",
-                "Content-Type": "application/json"
-            }
-            data = {
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": user_text}]
-            }
-            res = requests.post("https://api.deepseek.com/chat/completions", json=data, headers=headers, timeout=10)
-            if res.status_code == 200:
-                reply = res.json()['choices'][0]['message']['content']
-                await update.message.reply_text(reply)
-                return
-            else:
-                errors.append(f"خطأ DeepSeek (كود {res.status_code}): {res.text}")
-        except Exception as e:
-            errors.append(f"خطأ DeepSeek: {str(e)}")
-    else:
-        errors.append("مفتاح DEEPSEEK_API_KEY غير مضاف.")
-
-    # إظهار التشخيص الدقيق
-    error_msg = "\n".join(errors)
-    await update.message.reply_text(f"لم نتمكن من الرد. التفاصيل الفنية:\n\n{error_msg}")
+        except Exception as err:
+            await update.message.reply_text(f"خطأ في Gemini: {str(err)}")
 
 def main():
     keep_alive()
