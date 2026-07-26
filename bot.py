@@ -1,7 +1,7 @@
 import os
-import requests
 from flask import Flask
 from threading import Thread
+from google import genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -19,29 +19,23 @@ def run_web():
 def keep_alive():
     Thread(target=run_web, daemon=True).start()
 
-# --- 2. إعدادات المفاتيح ---
+# --- 2. إعدادات المفاتيح وعميل Gemini ---
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- 3. الاتصال المباشر بـ Gemini REST API ---
+# تهيئة عميل جوجل المحدث
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# --- 3. الاتصال بـ Gemini API ---
 def ask_gemini(prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        res_data = response.json()
-        
-        if response.status_code == 200:
-            return res_data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            err_msg = res_data.get("error", {}).get("message", "خطأ غير معروف")
-            return f"خطأ من جوجل ({response.status_code}): {err_msg}"
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
     except Exception as e:
-        return f"خطأ في الاتصال: {e}"
+        return f"حدث خطأ أثناء التواصل مع الذكاء الاصطناعي: {e}"
 
 # --- 4. معالجات التليجرام ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -53,6 +47,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     answer = ask_gemini(user_text)
     
+    # التعامل مع الرسائل الطويلة
     if len(answer) > 4000:
         for i in range(0, len(answer), 4000):
             await update.message.reply_text(answer[i:i + 4000])
@@ -66,7 +61,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     print("Bot is polling...")
-    # هذه الخاصية تمسح أي رسائل علقت سابقاً وتنعش البوت فوراً
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
